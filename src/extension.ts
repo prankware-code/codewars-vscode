@@ -14,6 +14,30 @@ let profilePanel: vscode.WebviewPanel | undefined = undefined;
 let trainerPanel: vscode.WebviewPanel | undefined = undefined;
 const kataPanels = new Map<string, vscode.WebviewPanel>();
 
+interface TrainSession {
+    kataId: string;
+    projectId: string;
+    solutionId?: string;
+    language: string;
+    testFramework?: string;
+    languageVersion?: string;
+    ciphered?: string[];
+    successMode?: string | null;
+    setupCode?: string;
+    fullFixture?: string;
+    jwt?: string;
+    codeUri?: vscode.Uri;
+    fixtureUri?: vscode.Uri;
+}
+const trainSessions = new Map<string, TrainSession>();
+let codewarsOutput: vscode.OutputChannel | undefined;
+function getOutputChannel(): vscode.OutputChannel {
+    if (!codewarsOutput) {
+        codewarsOutput = vscode.window.createOutputChannel('Codewars');
+    }
+    return codewarsOutput;
+}
+
 const TRAINING_MODES = [
     { id: 'fundamentals', title: 'Fundamentals', desc: 'Practice katas with a focus on core concepts.' },
     { id: 'rank-up', title: 'Rank Up', desc: 'Katas above your current rank to level up.' },
@@ -191,11 +215,26 @@ function extractSetupFromHtml(html: string): string | null {
     return null;
 }
 
+interface KataSessionResult {
+    setup: string | null;
+    exampleFixture?: string;
+    fullFixture?: string;
+    projectId?: string;
+    solutionId?: string;
+    testFramework?: string;
+    languageVersion?: string;
+    ciphered?: string[];
+    successMode?: string | null;
+    jwt?: string;
+    rawSession?: unknown;
+    debugHtml?: string;
+}
+
 async function fetchKataSetup(
     context: vscode.ExtensionContext,
     idOrSlug: string,
     language: string
-): Promise<{ setup: string | null; exampleFixture?: string; debugHtml?: string }> {
+): Promise<KataSessionResult> {
     const trainUrl = `https://www.codewars.com/kata/${encodeURIComponent(idOrSlug)}/train/${encodeURIComponent(language)}`;
 
     const pageResp = await fetchAuthed(context, trainUrl);
@@ -243,10 +282,20 @@ async function fetchKataSetup(
             const text = await resp.text();
             return { setup: null, debugHtml: text };
         }
-        const data = await resp.json() as { setup?: string; exampleFixture?: string; fixture?: string };
+        const data = await resp.json() as Record<string, unknown>;
+        const jwtMatch = pageHtml.match(/\\"jwt\\":\\"([^"\\]+)\\"/);
         return {
-            setup: data.setup ?? null,
-            exampleFixture: data.exampleFixture ?? data.fixture
+            setup: (data.setup as string | undefined) ?? null,
+            exampleFixture: (data.exampleFixture as string | undefined),
+            fullFixture: (data.fixture as string | undefined),
+            projectId,
+            solutionId: (data.relayId ?? data.id ?? data.solutionId ?? data.solution_id) as string | undefined,
+            testFramework: data.testFramework as string | undefined,
+            languageVersion: (data.languageVersion ?? data.activeVersion) as string | undefined,
+            ciphered: (data.ciphered as string[] | undefined) ?? [],
+            successMode: data.successMode as string | null | undefined,
+            jwt: jwtMatch?.[1],
+            rawSession: data
         };
     } catch (e) {
         return { setup: null, debugHtml: `fetch error: ${(e as Error).message}\n\n${pageHtml}` };
@@ -818,6 +867,10 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.commands.executeCommand('codewars.startTraining', prefs.mode, prefs.language);
             } else if (message.command === 'train') {
                 vscode.commands.executeCommand('codewars.trainKata', kata.id);
+            } else if (message.command === 'test') {
+                vscode.commands.executeCommand('codewars.testKata', kata.id);
+            } else if (message.command === 'attempt') {
+                vscode.commands.executeCommand('codewars.attemptKata', kata.id);
             }
         });
         panel.onDidDispose(() => { kataPanels.delete(kata.id); });
@@ -888,6 +941,31 @@ export function activate(context: vscode.ExtensionContext) {
         });
         await vscode.window.showTextDocument(doc, vscode.ViewColumn.Two);
 
+        const session: TrainSession = {
+            kataId: kata.id,
+            projectId: result.projectId ?? '',
+            solutionId: result.solutionId,
+            language,
+            testFramework: result.testFramework,
+            languageVersion: result.languageVersion,
+            ciphered: result.ciphered,
+            successMode: result.successMode,
+            setupCode: result.setup ?? undefined,
+            fullFixture: result.fullFixture,
+            jwt: result.jwt,
+            codeUri: doc.uri
+        };
+
+        const out = getOutputChannel();
+        out.appendLine(`\n─── Session for ${kata.name} (${language}) ───`);
+        out.appendLine(`projectId: ${session.projectId}`);
+        out.appendLine(`solutionId: ${session.solutionId ?? '(missing)'}`);
+        out.appendLine(`testFramework: ${session.testFramework ?? '(missing)'}`);
+        out.appendLine(`jwt: ${session.jwt ? session.jwt.slice(0, 20) + '...' : '(missing)'}`);
+        if (result.rawSession) {
+            out.appendLine(`Raw session keys: ${Object.keys(result.rawSession as object).join(', ')}`);
+        }
+
         if (result.exampleFixture && result.exampleFixture.trim().length > 0) {
             const testsDoc = await vscode.workspace.openTextDocument({
                 content: result.exampleFixture,
@@ -895,13 +973,278 @@ export function activate(context: vscode.ExtensionContext) {
             });
             await vscode.commands.executeCommand('workbench.action.newGroupBelow');
             await vscode.window.showTextDocument(testsDoc, { preview: false });
+            session.fixtureUri = testsDoc.uri;
         }
+
+        trainSessions.set(kata.id, session);
+        if (panel) {
+            panel.webview.html = getKataHtml(kata, true);
+        }
+    });
+
+    const testKataCmd = vscode.commands.registerCommand('codewars.testKata', async (kataId: string) => {
+        await runKata(kataId, 'test');
+    });
+
+    async function runKata(kataId: string, mode: 'test' | 'attempt'): Promise<void> {
+        const session = trainSessions.get(kataId);
+        if (!session) {
+            vscode.window.showWarningMessage('Click "Train this kata" first.');
+            return;
+        }
+
+        const findDocByUri = (uri: vscode.Uri | undefined) => uri
+            ? vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString())
+            : undefined;
+        const findVisibleByColumn = (col: vscode.ViewColumn) =>
+            vscode.window.visibleTextEditors.find(e => e.viewColumn === col)?.document;
+
+        let codeDoc = findDocByUri(session.codeUri) ?? findVisibleByColumn(vscode.ViewColumn.Two);
+        let fixtureDoc = findDocByUri(session.fixtureUri) ?? findVisibleByColumn(vscode.ViewColumn.Three);
+        if (codeDoc) {
+            session.codeUri = codeDoc.uri;
+        }
+        if (fixtureDoc) {
+            session.fixtureUri = fixtureDoc.uri;
+        }
+        const code = codeDoc?.getText() ?? '';
+        const fixture = fixtureDoc?.getText() ?? '';
+        if (!code.trim()) {
+            vscode.window.showWarningMessage('Code editor is empty — nothing to run.');
+            return;
+        }
+
+        const out = getOutputChannel();
+        out.show(true);
+        out.appendLine(`\n─── ${new Date().toLocaleTimeString()} · ${mode.toUpperCase()} · ${session.language} ───`);
+
+        const cookie = await context.secrets.get(SESSION_COOKIE_SECRET);
+        if (!cookie) {
+            out.appendLine('No session cookie. Sign in first.');
+            return;
+        }
+
+        out.appendLine('→ Refreshing session (new relayId)...');
+        const fresh = await fetchKataSetup(context, kataId, session.language);
+        if (!fresh.solutionId || !fresh.jwt) {
+            out.appendLine('Failed to refresh session — cannot get relayId/jwt.');
+            if (fresh.debugHtml) {
+                out.appendLine(fresh.debugHtml.slice(0, 400));
+            }
+            return;
+        }
+        session.solutionId = fresh.solutionId;
+        session.jwt = fresh.jwt;
+        session.testFramework = fresh.testFramework ?? session.testFramework;
+        session.languageVersion = fresh.languageVersion ?? session.languageVersion;
+        session.ciphered = fresh.ciphered ?? session.ciphered;
+        session.successMode = fresh.successMode ?? session.successMode;
+        session.setupCode = fresh.setup ?? session.setupCode;
+        session.fullFixture = fresh.fullFixture ?? session.fullFixture;
+
+        const pageResp = await fetchAuthed(
+            context,
+            `https://www.codewars.com/kata/${encodeURIComponent(kataId)}/train/${encodeURIComponent(session.language)}`
+        );
+        const pageHtml = pageResp ? await pageResp.text() : '';
+        const csrfMatch = pageHtml.match(/<meta name="csrf-token" content="([^"]+)"/);
+        const csrfToken = csrfMatch?.[1];
+
+        out.appendLine('→ POST https://www.codewars.com/api/v1/runner/authorize');
+        let runnerJwt: string | null = null;
+        try {
+            const authResp = await fetch('https://www.codewars.com/api/v1/runner/authorize', {
+                method: 'POST',
+                headers: {
+                    'User-Agent': USER_AGENT,
+                    'Accept': 'application/json, text/plain, */*',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'authorization': session.jwt,
+                    'X-CSRF-Token': csrfToken ?? '',
+                    'Cookie': `_session_id=${cookie}`,
+                    'Origin': 'https://www.codewars.com',
+                    'Referer': `https://www.codewars.com/kata/${kataId}/train/${session.language}`
+                }
+            });
+            const authBody = await authResp.text();
+            out.appendLine(`← HTTP ${authResp.status} · ${authResp.headers.get('content-type') ?? '(no content-type)'}`);
+            if (!authResp.ok) {
+                out.appendLine(authBody.slice(0, 400));
+                return;
+            }
+            try {
+                const parsed = JSON.parse(authBody);
+                runnerJwt = parsed.token ?? parsed.jwt ?? parsed.access_token ?? null;
+            } catch {
+                runnerJwt = authBody.trim().replace(/^"|"$/g, '');
+            }
+            if (!runnerJwt) {
+                out.appendLine(`authorize response (first 400): ${authBody.slice(0, 400)}`);
+                return;
+            }
+        } catch (e) {
+            out.appendLine(`Error calling /authorize: ${(e as Error).message}`);
+            return;
+        }
+
+        const channelId = `runner:${Math.random().toString(16).slice(2, 10)}-${Math.random().toString(16).slice(2, 6)}-${Math.random().toString(16).slice(2, 6)}-${Math.random().toString(16).slice(2, 6)}-${Math.random().toString(16).slice(2, 14)}`;
+        const isAttempt = mode === 'attempt';
+        if (isAttempt && !session.fullFixture) {
+            out.appendLine('No encrypted fixture in session — cannot submit. Reopen via Train.');
+            return;
+        }
+        const payload = {
+            code,
+            fixture: isAttempt ? session.fullFixture! : fixture,
+            setup: '',
+            language: session.language,
+            testFramework: session.testFramework,
+            languageVersion: session.languageVersion,
+            relayId: session.solutionId,
+            ciphered: isAttempt ? ['setup', 'fixture'] : [],
+            channel: channelId,
+            successMode: session.successMode ?? null
+        };
+
+        out.appendLine(`Payload: relayId=${payload.relayId} lang=${payload.language} version=${payload.languageVersion} framework=${payload.testFramework} ciphered=${JSON.stringify(payload.ciphered)} setup.len=${payload.setup.length} successMode=${payload.successMode}`);
+        out.appendLine('→ POST https://runner.codewars.com/run');
+        try {
+            const resp = await fetch('https://runner.codewars.com/run', {
+                method: 'POST',
+                headers: {
+                    'User-Agent': USER_AGENT,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Authorization': `Bearer ${runnerJwt}`,
+                    'Origin': 'https://cr.codewars.com',
+                    'Referer': 'https://cr.codewars.com/'
+                },
+                body: JSON.stringify(payload)
+            });
+            const raw = await resp.text();
+            out.appendLine(`← HTTP ${resp.status} · ${resp.headers.get('content-type') ?? '(no content-type)'}`);
+            if (!resp.ok) {
+                out.appendLine(raw.slice(0, 400));
+                return;
+            }
+            let data: any;
+            try {
+                data = JSON.parse(raw);
+            } catch {
+                out.appendLine(`Non-JSON body (first 500 chars):\n${raw.slice(0, 500)}`);
+                return;
+            }
+            formatRunResult(out, data);
+
+            if (isAttempt && data.token) {
+                out.appendLine(`\n→ POST /api/v1/code-challenges/projects/${session.projectId}/solutions/${session.solutionId}/notify`);
+                try {
+                    const notifyResp = await fetch(
+                        `https://www.codewars.com/api/v1/code-challenges/projects/${session.projectId}/solutions/${session.solutionId}/notify`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'User-Agent': USER_AGENT,
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json, text/plain, */*',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'authorization': session.jwt!,
+                                'X-CSRF-Token': csrfToken ?? '',
+                                'Cookie': `_session_id=${cookie}`,
+                                'Origin': 'https://www.codewars.com',
+                                'Referer': `https://www.codewars.com/kata/${kataId}/train/${session.language}`
+                            },
+                            body: JSON.stringify({
+                                token: data.token,
+                                testFramework: session.testFramework,
+                                code,
+                                fixture: session.fullFixture,
+                                languageVersion: session.languageVersion
+                            })
+                        }
+                    );
+                    const notifyBody = await notifyResp.text();
+                    out.appendLine(`← HTTP ${notifyResp.status} · ${notifyBody.slice(0, 200)}`);
+                    const completed = data.result?.completed === true;
+                    if (completed) {
+                        out.appendLine('\n✓ Kata completed — submission finalized on codewars.com');
+                    } else {
+                        out.appendLine('\nSome tests failed — nothing finalized.');
+                    }
+                } catch (e) {
+                    out.appendLine(`Error calling /notify: ${(e as Error).message}`);
+                }
+            }
+        } catch (e) {
+            out.appendLine(`Error calling /run: ${(e as Error).message}`);
+        }
+    }
+
+    const attemptKataCmd = vscode.commands.registerCommand('codewars.attemptKata', async (kataId: string) => {
+        await runKata(kataId, 'attempt');
     });
 
     context.subscriptions.push(
         openWelcomeCmd, loginCmd, logoutCmd, refreshCmd, openProfileCmd,
-        openTrainerCmd, startTrainingCmd, openKataByUrlCmd, openKataByIdCmd, trainKataCmd
+        openTrainerCmd, startTrainingCmd, openKataByUrlCmd, openKataByIdCmd, trainKataCmd,
+        testKataCmd, attemptKataCmd
     );
+}
+
+function formatRunResult(out: vscode.OutputChannel, data: any): void {
+    if (data.stderr) {
+        out.appendLine(`stderr:\n${data.stderr}`);
+    }
+    if (data.stdout) {
+        out.appendLine(`stdout:\n${data.stdout}`);
+    }
+    const result = data.result;
+    if (result && Array.isArray(result.output)) {
+        out.appendLine('');
+        renderOutputTree(out, result.output, 0);
+    }
+    if (result) {
+        const passed = result.passed ?? 0;
+        const failed = result.failed ?? 0;
+        const errors = result.errors ?? 0;
+        out.appendLine(`\nPassed: ${passed} · Failed: ${failed} · Errors: ${errors}`);
+    }
+    if (typeof data.exitCode === 'number') {
+        out.appendLine(`exitCode: ${data.exitCode}${typeof data.wallTime === 'number' ? ` · ${data.wallTime}ms` : ''}`);
+    }
+}
+
+function renderOutputTree(out: vscode.OutputChannel, nodes: any[], depth: number): void {
+    const indent = '  '.repeat(depth);
+    for (const node of nodes) {
+        switch (node.t) {
+            case 'describe':
+                out.appendLine(`${indent}▾ ${node.v}`);
+                if (Array.isArray(node.items)) { renderOutputTree(out, node.items, depth + 1); }
+                break;
+            case 'it':
+                out.appendLine(`${indent}• ${node.v}`);
+                if (Array.isArray(node.items)) { renderOutputTree(out, node.items, depth + 1); }
+                break;
+            case 'passed':
+                out.appendLine(`${indent}✓ ${node.v}`);
+                break;
+            case 'failed':
+                out.appendLine(`${indent}✗ ${node.v}`);
+                break;
+            case 'error':
+                out.appendLine(`${indent}! ${node.v}`);
+                break;
+            case 'log':
+                out.appendLine(`${indent}  ${node.v}`);
+                break;
+            case 'completedin':
+                out.appendLine(`${indent}  (${node.v}ms)`);
+                break;
+            default:
+                if (node.v) { out.appendLine(`${indent}${node.t}: ${node.v}`); }
+        }
+    }
 }
 
 function escapeHtml(s: string): string {
@@ -1184,7 +1527,7 @@ function getTrainerHtml(prefs: TrainerPrefs, userLangs: string[]): string {
 </html>`;
 }
 
-function getKataHtml(kata: Kata): string {
+function getKataHtml(kata: Kata, hasSession = false): string {
     const rankColor = kata.rank.color ? rankColorCss(kata.rank.color) : '#888';
     const tags = kata.tags.map(t => `<span class="chip">${escapeHtml(t)}</span>`).join('') || '<em>—</em>';
     const langs = kata.languages.map(l => `<span class="chip">${escapeHtml(l)}</span>`).join('') || '<em>—</em>';
@@ -1225,7 +1568,11 @@ function getKataHtml(kata: Kata): string {
     </div>
 
     <div class="toolbar">
-        <button onclick="trainKata()">Train this kata</button>
+        <button onclick="trainKata()">${hasSession ? 'Reopen editors' : 'Train this kata'}</button>
+        ${hasSession ? `
+        <button onclick="testKata()" title="Run code against your sample tests via cr.codewars.com">▶ Test</button>
+        <button class="secondary" onclick="attemptKata()" title="Submit full solution — opens codewars.com">⤴ Attempt</button>
+        ` : ''}
         <button class="secondary" onclick="openUrl(event,'${escapeHtml(kata.url)}')">Open on codewars.com</button>
         <button class="secondary" onclick="skipKata()" title="Pick another kata with the same mode/language">↻ Skip</button>
     </div>
@@ -1260,6 +1607,12 @@ function getKataHtml(kata: Kata): string {
     }
     function trainKata() {
         vscode.postMessage({ command: 'train' });
+    }
+    function testKata() {
+        vscode.postMessage({ command: 'test' });
+    }
+    function attemptKata() {
+        vscode.postMessage({ command: 'attempt' });
     }
     document.querySelectorAll('.description a').forEach(a => {
         a.addEventListener('click', (e) => openUrl(e, a.getAttribute('href')));

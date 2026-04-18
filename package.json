@@ -44,6 +44,14 @@
       {
         "command": "codewars.trainKata",
         "title": "Codewars: Train Current Kata"
+      },
+      {
+        "command": "codewars.testKata",
+        "title": "Codewars: Test Current Kata"
+      },
+      {
+        "command": "codewars.attemptKata",
+        "title": "Codewars: Attempt Current Kata"
       }
     ],
     "viewsContainers": {
