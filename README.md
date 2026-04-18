@@ -70,7 +70,7 @@ Existing files are never overwritten on re-train — your edits persist. To rese
 ## Development
 
 ```bash
-git clone https://github.com/<you>/codewars-vscode.git
+git clone https://github.com/prankware/codewars-vscode.git
 cd codewars-vscode/codewars-vscode
 npm install
 npm run watch      # TypeScript in watch mode
