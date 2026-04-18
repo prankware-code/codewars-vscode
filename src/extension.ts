@@ -53,6 +53,41 @@ const POPULAR_LANGUAGES = [
     'coffeescript', 'dart', 'fsharp', 'lua', 'ocaml', 'perl', 'r', 'sql'
 ];
 
+const LANGUAGE_EXT: Record<string, string> = {
+    javascript: 'js',
+    typescript: 'ts',
+    coffeescript: 'coffee',
+    python: 'py',
+    ruby: 'rb',
+    java: 'java',
+    kotlin: 'kt',
+    scala: 'scala',
+    groovy: 'groovy',
+    cpp: 'cpp',
+    c: 'c',
+    csharp: 'cs',
+    fsharp: 'fs',
+    go: 'go',
+    rust: 'rs',
+    swift: 'swift',
+    php: 'php',
+    haskell: 'hs',
+    clojure: 'clj',
+    elixir: 'ex',
+    erlang: 'erl',
+    lua: 'lua',
+    perl: 'pl',
+    r: 'r',
+    sql: 'sql',
+    dart: 'dart',
+    ocaml: 'ml',
+    nim: 'nim',
+    crystal: 'cr',
+    elm: 'elm',
+    shell: 'sh',
+    bash: 'sh'
+};
+
 const LANGUAGE_MAP: Record<string, string> = {
     javascript: 'javascript',
     typescript: 'typescript',
@@ -228,6 +263,24 @@ interface KataSessionResult {
     jwt?: string;
     rawSession?: unknown;
     debugHtml?: string;
+}
+
+async function ensureKataFile(
+    context: vscode.ExtensionContext,
+    kataSlug: string,
+    language: string,
+    fileName: string,
+    initialContent: string
+): Promise<vscode.Uri> {
+    const dir = vscode.Uri.joinPath(context.globalStorageUri, 'katas', kataSlug, language);
+    await vscode.workspace.fs.createDirectory(dir);
+    const file = vscode.Uri.joinPath(dir, fileName);
+    try {
+        await vscode.workspace.fs.stat(file);
+    } catch {
+        await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(initialContent));
+    }
+    return file;
 }
 
 async function fetchKataSetup(
@@ -935,10 +988,15 @@ export function activate(context: vscode.ExtensionContext) {
         panel?.reveal(vscode.ViewColumn.One, false);
 
         const vscodeLang = LANGUAGE_MAP[language] ?? 'plaintext';
-        const doc = await vscode.workspace.openTextDocument({
-            content: result.setup ?? `// Starter code unavailable for ${kata.name} (${language}).\n`,
-            language: vscodeLang
-        });
+        const ext = LANGUAGE_EXT[language] ?? 'txt';
+        const kataSlug = kata.slug || kata.id;
+
+        const solutionUri = await ensureKataFile(
+            context, kataSlug, language, `solution.${ext}`,
+            result.setup ?? `// Starter code unavailable for ${kata.name} (${language}).\n`
+        );
+        const doc = await vscode.workspace.openTextDocument(solutionUri);
+        await vscode.languages.setTextDocumentLanguage(doc, vscodeLang).then(undefined, () => {});
         await vscode.window.showTextDocument(doc, vscode.ViewColumn.Two);
 
         const session: TrainSession = {
@@ -967,10 +1025,11 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         if (result.exampleFixture && result.exampleFixture.trim().length > 0) {
-            const testsDoc = await vscode.workspace.openTextDocument({
-                content: result.exampleFixture,
-                language: vscodeLang
-            });
+            const fixtureUri = await ensureKataFile(
+                context, kataSlug, language, `tests.${ext}`, result.exampleFixture
+            );
+            const testsDoc = await vscode.workspace.openTextDocument(fixtureUri);
+            await vscode.languages.setTextDocumentLanguage(testsDoc, vscodeLang).then(undefined, () => {});
             await vscode.commands.executeCommand('workbench.action.newGroupBelow');
             await vscode.window.showTextDocument(testsDoc, { preview: false });
             session.fixtureUri = testsDoc.uri;
