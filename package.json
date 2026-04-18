@@ -3,7 +3,7 @@
   "publisher": "prankware",
   "displayName": "codewars-vscode",
   "description": "Codewars integration for VS Code",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.116.0"
   },
