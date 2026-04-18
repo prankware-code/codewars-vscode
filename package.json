@@ -1,10 +1,11 @@
 {
   "name": "codewars-vscode",
+  "publisher": "prankware",
   "displayName": "codewars-vscode",
   "description": "Codewars integration for VS Code",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.111.0"
+    "vscode": "^1.116.0"
   },
   "categories": [
     "Other"
@@ -59,7 +60,7 @@
         {
           "id": "codewars-explorer",
           "title": "Codewars",
-          "icon": "src/logo.svg"
+          "icon": "media/logo.svg"
         }
       ]
     },
