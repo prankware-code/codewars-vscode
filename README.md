@@ -1,71 +1,96 @@
-# codewars-vscode README
+# Codewars for VS Code
 
-This is the README for your extension "codewars-vscode". After writing up a brief description, we recommend including the following sections.
+Unofficial Codewars integration: browse your profile, pick a kata, solve it in the editor, and submit — without leaving VS Code.
+
+> Not affiliated with Codewars. Uses public endpoints plus a session cookie you paste yourself.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- **Profile sidebar** — overall rank, honor, leaderboard position, completed count. Webview with tabs: Overview, Languages (per-language ranks), Completed katas.
+- **Trainer** — pick a mode (Fundamentals / Rank Up / Random / Practice / Beta / Kumite) and a language. The extension fetches a kata matching your rank (`-5 / -4` for Fundamentals, `-3` for Rank Up at 4 kyu, etc.) via the public search page.
+- **Kata view** — description (markdown), tags, supported languages, rank pill, author, stats. Buttons: **Train this kata**, **▶ Test**, **⤴ Attempt**, **↻ Skip**.
+- **Solve inside VS Code** — description on the left, starter code on the top-right, sample tests on the bottom-right. Files live under the extension's global storage, so `Ctrl+S` just saves.
+- **Test** runs your solution + your (possibly edited) sample tests via `cr.codewars.com` and shows a test tree in the Output channel.
+- **Attempt** submits to the hidden full test suite, finalizes on codewars.com — the kata is marked as completed on your profile.
+- **Skip** rerolls with the same mode and language.
+- **Open kata by URL / ID** — paste a kata link or slug, the details render inside VS Code.
 
-For example if there is an image subfolder under your extension project workspace:
+## Quick start
 
-\!\[feature X\]\(images/feature-x.png\)
+1. Install the extension and open the **Codewars** view in the activity bar.
+2. Click **Login** → enter your Codewars username.
+3. When prompted for `_session_id`, paste the cookie from your browser:
+   - On codewars.com, open DevTools → **Application** (Chrome) / **Storage** (Firefox) → **Cookies** → `https://www.codewars.com` → copy the value of `_session_id`.
+   - This cookie is stored in VS Code's `SecretStorage` (encrypted), never written to plain settings.
+4. The profile opens. Go to **Kata list** → **Start training...** → pick a mode → **Start Training**.
+5. In the kata webview press **Train this kata**. Description docks to the left, starter code + sample tests appear on the right.
+6. Edit the solution, press **▶ Test** to run locally, **⤴ Attempt** to submit.
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## Authentication
 
-## Requirements
+The extension uses only what you give it:
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+- `username` — kept in `globalState` (plain).
+- `_session_id` cookie — kept in VS Code `SecretStorage`.
+- A short-lived runner JWT is fetched on each Test/Attempt via `POST /api/v1/runner/authorize`.
 
-## Extension Settings
+If the cookie expires or is revoked, any authenticated request will land on the sign-in redirect; the extension notices this and signs you out automatically.
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+## Commands
 
-For example:
+| Command | Description |
+|---|---|
+| `Codewars: Open Welcome Screen` | Welcome webview with the Login button |
+| `Codewars: Sign In` / `Sign Out` | Start / end the session |
+| `Codewars: Open Profile` | Profile webview with tabs |
+| `Codewars: Refresh Profile` | Re-fetch profile + completed katas |
+| `Codewars: Open Trainer` | Setup webview (mode + language) |
+| `Codewars: Open Kata by URL or ID` | Paste a kata link or slug |
+| `Codewars: Train Current Kata` | Open solution + tests editors for the active kata |
+| `Codewars: Test Current Kata` | Run solution against the visible sample tests |
+| `Codewars: Attempt Current Kata` | Run against the hidden full suite and finalize |
 
-This extension contributes the following settings:
+## How kata files are stored
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+Starter code and sample tests are written under VS Code's extension global storage:
 
-## Known Issues
+- Linux: `~/.config/Code/User/globalStorage/<publisher>.codewars-vscode/katas/<slug>/<language>/`
+- macOS: `~/Library/Application Support/Code/User/globalStorage/<publisher>.codewars-vscode/katas/...`
+- Windows: `%APPDATA%\Code\User\globalStorage\<publisher>.codewars-vscode\katas\...`
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+Existing files are never overwritten on re-train — your edits persist. To reset a kata to the starter, delete its `solution.<ext>` file and press **Train this kata** again.
 
-## Release Notes
+## Known limitations
 
-Users appreciate release notes as you update your extension.
+- The Trainer's mode labels mirror codewars.com, but selection is done by filtering the public `/kata/search/{language}` page by rank. It's not the exact algorithm the official trainer uses (that requires server-side state).
+- `Attempt` works for public test-runner katas (the vast majority). Katas that rely on unusual runner setups may report a decrypter error — fall back to **Open on codewars.com**.
+- Attempt flow depends on the `/api/v1/runner/authorize` → `runner.codewars.com/run` → `/api/v1/.../notify` pipeline. If Codewars changes this pipeline, the Test/Attempt buttons may break until the extension is updated.
+- No offline mode — the extension always talks to codewars.com.
 
-### 1.0.0
+## Development
 
-Initial release of ...
+```bash
+git clone https://github.com/<you>/codewars-vscode.git
+cd codewars-vscode/codewars-vscode
+npm install
+npm run watch      # TypeScript in watch mode
+```
 
-### 1.0.1
+Press `F5` in VS Code to launch an Extension Development Host with the extension loaded. After code changes, reload the host with `Ctrl+R`.
 
-Fixed issue #.
+Project layout:
 
-### 1.1.0
+- `src/extension.ts` — single-file extension: tree providers, webviews, commands, Codewars API glue.
+- `src/logo.svg` — activity bar icon.
+- `out/` — compiled JS (generated).
 
-Added features X, Y, and Z.
+## Contributing
 
----
+Issues and PRs welcome. When reporting a bug, please include:
 
-## Following extension guidelines
+- Output from the `Codewars` output channel (last session + last Test/Attempt run).
+- VS Code version and OS.
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+## License
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+MIT.
