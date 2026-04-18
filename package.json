@@ -1,0 +1,89 @@
+{
+  "name": "codewars-vscode",
+  "displayName": "codewars-vscode",
+  "description": "Codewars integration for VS Code",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.111.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codewars.openWelcome",
+        "title": "Codewars: Open Welcome Screen"
+      },
+      {
+        "command": "codewars.login",
+        "title": "Codewars: Sign In"
+      },
+      {
+        "command": "codewars.logout",
+        "title": "Codewars: Sign Out"
+      },
+      {
+        "command": "codewars.openProfile",
+        "title": "Codewars: Open Profile"
+      },
+      {
+        "command": "codewars.refresh",
+        "title": "Codewars: Refresh Profile"
+      },
+      {
+        "command": "codewars.openTrainer",
+        "title": "Codewars: Open Trainer"
+      },
+      {
+        "command": "codewars.openKataByUrl",
+        "title": "Codewars: Open Kata by URL or ID"
+      },
+      {
+        "command": "codewars.trainKata",
+        "title": "Codewars: Train Current Kata"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codewars-explorer",
+          "title": "Codewars",
+          "icon": "src/logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "codewars-explorer": [
+        {
+          "id": "codewars-profile",
+          "name": "User profile"
+        },
+        {
+          "id": "codewars-kata-list",
+          "name": "Kata list"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.116.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.56.1",
+    "eslint": "^9.39.3",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
