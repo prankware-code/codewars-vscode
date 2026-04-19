@@ -459,37 +459,59 @@ function modeToFilter(mode: string, language: string, userRank: number | null): 
 
 async function pickRandomKataId(context: vscode.ExtensionContext, filter: KataFilter): Promise<string | null> {
     const reserved = new Set(['random', 'search', 'authored', 'beta', 'reviewing', 'new']);
-    const params = new URLSearchParams();
-    params.set('q', '');
-    params.set('beta', filter.beta ? 'true' : 'false');
-    for (const r of filter.ranks ?? []) {
-        params.append('r[]', String(r));
-    }
-    params.set('order_by', 'satisfaction_percent desc');
-    if (filter.page && filter.page > 0) {
-        params.set('page', String(filter.page));
-    }
-    const url = filter.language
-        ? `https://www.codewars.com/kata/search/${encodeURIComponent(filter.language)}?${params}`
-        : `https://www.codewars.com/kata/search?${params}`;
 
-    const resp = await fetchAuthed(context, url);
-    if (!resp || !resp.ok) {
-        return null;
+    const completed = context.globalState.get<CompletedPage>(COMPLETED_CACHE_KEY);
+    const completedKeys = new Set<string>();
+    for (const k of completed?.data ?? []) {
+        if (k.id) { completedKeys.add(k.id); }
+        if (k.slug) { completedKeys.add(k.slug); }
     }
-    const html = await resp.text();
-    const slugs = new Set<string>();
-    for (const m of html.matchAll(/href="\/kata\/([a-f0-9]{24}|[a-z][a-z0-9-]{4,})"/g)) {
-        const s = m[1];
-        if (!reserved.has(s) && !s.includes('/')) {
-            slugs.add(s);
+
+    const MAX_PAGES_TO_TRY = 20;
+    const triedPages = new Set<number>();
+    let nextPage: number | null = filter.page ?? 0;
+
+    while (triedPages.size < MAX_PAGES_TO_TRY) {
+        const page = nextPage ?? Math.floor(Math.random() * 30);
+        nextPage = null;
+        if (triedPages.has(page)) {
+            continue;
+        }
+        triedPages.add(page);
+
+        const params = new URLSearchParams();
+        params.set('q', '');
+        params.set('beta', filter.beta ? 'true' : 'false');
+        for (const r of filter.ranks ?? []) {
+            params.append('r[]', String(r));
+        }
+        params.set('order_by', 'satisfaction_percent desc');
+        if (page > 0) {
+            params.set('page', String(page));
+        }
+        const url = filter.language
+            ? `https://www.codewars.com/kata/search/${encodeURIComponent(filter.language)}?${params}`
+            : `https://www.codewars.com/kata/search?${params}`;
+
+        const resp = await fetchAuthed(context, url);
+        if (!resp || !resp.ok) {
+            continue;
+        }
+        const html = await resp.text();
+        const slugs = new Set<string>();
+        for (const m of html.matchAll(/href="\/kata\/([a-f0-9]{24}|[a-z][a-z0-9-]{4,})"/g)) {
+            const s = m[1];
+            if (!reserved.has(s) && !s.includes('/') && !completedKeys.has(s)) {
+                slugs.add(s);
+            }
+        }
+        const arr = Array.from(slugs);
+        if (arr.length > 0) {
+            return arr[Math.floor(Math.random() * arr.length)];
         }
     }
-    const arr = Array.from(slugs);
-    if (arr.length === 0) {
-        return null;
-    }
-    return arr[Math.floor(Math.random() * arr.length)];
+
+    return null;
 }
 
 function pickPracticeKataId(context: vscode.ExtensionContext): string | null {
