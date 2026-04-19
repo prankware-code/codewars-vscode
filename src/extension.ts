@@ -624,6 +624,19 @@ class KataListProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
         const items: vscode.TreeItem[] = [];
 
+        const prefs = this.context.globalState.get<TrainerPrefs>(TRAINER_PREFS_KEY);
+        const currentLanguage = prefs?.language ?? 'javascript';
+
+        const labelText = `Language: ${currentLanguage}`;
+        const langItem = new vscode.TreeItem({
+            label: labelText,
+            highlights: [[labelText.indexOf(currentLanguage), labelText.length]]
+        });
+        langItem.iconPath = new vscode.ThemeIcon('symbol-namespace', new vscode.ThemeColor('charts.blue'));
+        langItem.tooltip = 'Click to change the language used by mode shortcuts (Fundamentals, Rank Up, …)';
+        langItem.command = { command: 'codewars.setTrainerLanguage', title: 'Change language' };
+        items.push(langItem);
+
         const start = new vscode.TreeItem('Start training...');
         start.iconPath = new vscode.ThemeIcon('play-circle');
         start.command = { command: 'codewars.openTrainer', title: 'Start training' };
@@ -634,7 +647,6 @@ class KataListProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         open.command = { command: 'codewars.openKataByUrl', title: 'Open kata' };
         items.push(open);
 
-        const prefs = this.context.globalState.get<TrainerPrefs>(TRAINER_PREFS_KEY);
         for (const mode of TRAINING_MODES) {
             const item = new vscode.TreeItem(mode.title);
             item.iconPath = new vscode.ThemeIcon('rocket');
@@ -642,7 +654,7 @@ class KataListProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
             item.command = {
                 command: 'codewars.startTraining',
                 title: mode.title,
-                arguments: [mode.id, prefs?.language ?? 'javascript']
+                arguments: [mode.id, currentLanguage]
             };
             items.push(item);
         }
@@ -849,9 +861,41 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.commands.executeCommand('codewars.startTraining', message.mode, message.language);
             } else if (message.command === 'openKataByUrl') {
                 vscode.commands.executeCommand('codewars.openKataByUrl');
+            } else if (message.command === 'prefsChanged') {
+                const current = context.globalState.get<TrainerPrefs>(TRAINER_PREFS_KEY);
+                await context.globalState.update(TRAINER_PREFS_KEY, {
+                    mode: message.mode ?? current?.mode ?? 'fundamentals',
+                    language: message.language ?? current?.language ?? 'javascript'
+                });
+                kataListProvider.refresh();
             }
         });
         trainerPanel.onDidDispose(() => { trainerPanel = undefined; });
+    });
+
+    const setTrainerLanguageCmd = vscode.commands.registerCommand('codewars.setTrainerLanguage', async () => {
+        const user = context.globalState.get<CodewarsUser>(PROFILE_CACHE_KEY);
+        const userLanguages = user ? Object.keys(user.ranks.languages) : [];
+        const languages = Array.from(new Set([...userLanguages, ...POPULAR_LANGUAGES])).sort();
+        const prefs = context.globalState.get<TrainerPrefs>(TRAINER_PREFS_KEY);
+
+        const picked = await vscode.window.showQuickPick(languages, {
+            title: 'Codewars: trainer language',
+            placeHolder: `Current: ${prefs?.language ?? 'javascript'}`
+        });
+        if (!picked) {
+            return;
+        }
+        const newPrefs: TrainerPrefs = {
+            mode: prefs?.mode ?? 'fundamentals',
+            language: picked
+        };
+        await context.globalState.update(TRAINER_PREFS_KEY, newPrefs);
+        kataListProvider.refresh();
+        if (trainerPanel) {
+            trainerPanel.webview.html = getTrainerHtml(newPrefs, userLanguages);
+        }
+        vscode.window.showInformationMessage(`Trainer language set to ${picked}.`);
     });
 
     const startTrainingCmd = vscode.commands.registerCommand(
@@ -1273,7 +1317,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         openWelcomeCmd, loginCmd, logoutCmd, refreshCmd, openProfileCmd,
-        openTrainerCmd, startTrainingCmd, openKataByUrlCmd, openKataByIdCmd, trainKataCmd,
+        openTrainerCmd, setTrainerLanguageCmd, startTrainingCmd,
+        openKataByUrlCmd, openKataByIdCmd, trainKataCmd,
         testKataCmd, attemptKataCmd
     );
 }
@@ -1592,19 +1637,27 @@ function getTrainerHtml(prefs: TrainerPrefs, userLangs: string[]): string {
 
 <script>
     const vscode = acquireVsCodeApi();
+    function currentMode() {
+        const checked = document.querySelector('input[name="mode"]:checked');
+        return checked ? checked.value : 'fundamentals';
+    }
+    function currentLanguage() {
+        return document.getElementById('language').value;
+    }
+    function notifyPrefsChanged() {
+        vscode.postMessage({ command: 'prefsChanged', mode: currentMode(), language: currentLanguage() });
+    }
     document.querySelectorAll('.mode').forEach(el => {
         el.addEventListener('click', () => {
             document.querySelectorAll('.mode').forEach(m => m.classList.remove('selected'));
             el.classList.add('selected');
             el.querySelector('input').checked = true;
+            notifyPrefsChanged();
         });
     });
-    function currentMode() {
-        const checked = document.querySelector('input[name="mode"]:checked');
-        return checked ? checked.value : 'fundamentals';
-    }
+    document.getElementById('language').addEventListener('change', notifyPrefsChanged);
     function start() {
-        vscode.postMessage({ command: 'start', mode: currentMode(), language: document.getElementById('language').value });
+        vscode.postMessage({ command: 'start', mode: currentMode(), language: currentLanguage() });
     }
     function openByUrl() {
         vscode.postMessage({ command: 'openKataByUrl' });

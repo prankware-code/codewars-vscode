@@ -40,6 +40,10 @@
         "title": "Codewars: Open Trainer"
       },
       {
+        "command": "codewars.setTrainerLanguage",
+        "title": "Codewars: Set Trainer Language"
+      },
+      {
         "command": "codewars.openKataByUrl",
         "title": "Codewars: Open Kata by URL or ID"
       },
