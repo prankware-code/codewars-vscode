@@ -583,7 +583,23 @@ class KataListProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
     getTreeItem(element: vscode.TreeItem) { return element; }
 
-    getChildren(): vscode.TreeItem[] {
+    getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
+        if (element?.contextValue === 'recent-header') {
+            const recent = this.context.globalState.get<RecentKata[]>(RECENT_KATAS_KEY) ?? [];
+            return recent.slice(0, 10).map(kata => {
+                const item = new vscode.TreeItem(kata.name);
+                item.description = kata.rank ?? '';
+                item.iconPath = new vscode.ThemeIcon('notebook');
+                item.tooltip = `${kata.name}${kata.rank ? ' · ' + kata.rank : ''}`;
+                item.command = {
+                    command: 'codewars.openKataById',
+                    title: 'Open kata',
+                    arguments: [kata.id]
+                };
+                return item;
+            });
+        }
+
         const items: vscode.TreeItem[] = [];
 
         const start = new vscode.TreeItem('Start training...');
@@ -611,21 +627,11 @@ class KataListProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
         const recent = this.context.globalState.get<RecentKata[]>(RECENT_KATAS_KEY) ?? [];
         if (recent.length > 0) {
-            const header = new vscode.TreeItem('Recent', vscode.TreeItemCollapsibleState.None);
+            const header = new vscode.TreeItem('Recent', vscode.TreeItemCollapsibleState.Expanded);
             header.description = `(${recent.length})`;
+            header.iconPath = new vscode.ThemeIcon('history');
+            header.contextValue = 'recent-header';
             items.push(header);
-            for (const kata of recent.slice(0, 10)) {
-                const item = new vscode.TreeItem(kata.name);
-                item.description = kata.rank ?? '';
-                item.iconPath = new vscode.ThemeIcon('notebook');
-                item.tooltip = `${kata.name}${kata.rank ? ' · ' + kata.rank : ''}`;
-                item.command = {
-                    command: 'codewars.openKataById',
-                    title: 'Open kata',
-                    arguments: [kata.id]
-                };
-                items.push(item);
-            }
         }
 
         return items;
