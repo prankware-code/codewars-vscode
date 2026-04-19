@@ -3,13 +3,14 @@
   "publisher": "prankware",
   "displayName": "codewars-vscode",
   "description": "Codewars integration for VS Code",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.116.0"
   },
   "categories": [
     "Other"
   ],
+  "icon": "media/icon.png",
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
