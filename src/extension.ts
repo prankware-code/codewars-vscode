@@ -1,4 +1,27 @@
 import * as vscode from 'vscode';
+import { marked } from 'marked';
+import hljs from 'highlight.js';
+import katex from 'katex';
+
+let extensionUri: vscode.Uri | undefined;
+let renderLog: vscode.OutputChannel | undefined;
+function isRenderDebug(): boolean {
+    return vscode.workspace.getConfiguration('codewars').get<boolean>('debugRender') === true;
+}
+function rlog(...parts: unknown[]) {
+    if (!isRenderDebug()) { return; }
+    if (!renderLog) { renderLog = vscode.window.createOutputChannel('Codewars Render'); }
+    renderLog.appendLine(parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join(' '));
+}
+
+const markedRenderer = new marked.Renderer();
+markedRenderer.code = (code: string, infostring: string | undefined) => {
+    const lang = (infostring || '').match(/\S*/)?.[0] || '';
+    const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+    const highlighted = hljs.highlight(code, { language, ignoreIllegals: true }).value;
+    return `<pre><code class="hljs language-${language}">${highlighted}</code></pre>`;
+};
+marked.use({ renderer: markedRenderer, gfm: true, breaks: false });
 
 const USERNAME_KEY = 'codewars.username';
 const PROFILE_CACHE_KEY = 'codewars.profileCache';
@@ -707,6 +730,7 @@ async function loadData(context: vscode.ExtensionContext, username: string): Pro
 }
 
 export function activate(context: vscode.ExtensionContext) {
+    extensionUri = context.extensionUri;
     const profileProvider = new ProfileProvider(context);
     vscode.window.registerTreeDataProvider('codewars-profile', profileProvider);
 
@@ -972,7 +996,7 @@ export function activate(context: vscode.ExtensionContext) {
         const existing = kataPanels.get(kata.id);
         if (existing) {
             existing.reveal(vscode.ViewColumn.One);
-            existing.webview.html = getKataHtml(kata);
+            existing.webview.html = getKataHtml(kata, false, existing.webview);
             return;
         }
         const panel = vscode.window.createWebviewPanel(
@@ -981,7 +1005,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.ViewColumn.One,
             { enableScripts: true, retainContextWhenHidden: true }
         );
-        panel.webview.html = getKataHtml(kata);
+        panel.webview.html = getKataHtml(kata, false, panel.webview);
         panel.webview.onDidReceiveMessage((message) => {
             if (message.command === 'openExternal' && message.url) {
                 vscode.env.openExternal(vscode.Uri.parse(message.url));
@@ -1109,7 +1133,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         trainSessions.set(kata.id, session);
         if (panel) {
-            panel.webview.html = getKataHtml(kata, true);
+            panel.webview.html = getKataHtml(kata, true, panel.webview);
         }
     });
 
@@ -1519,63 +1543,89 @@ function getProfileHtml(user: CodewarsUser, completed: CompletedPage): string {
 </html>`;
 }
 
-function renderMarkdown(md: string): string {
-    let src = md.replace(/\r\n/g, '\n');
-    const fences: string[] = [];
-    src = src.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang: string, code: string) => {
-        const safe = escapeHtml(code.replace(/\n+$/, ''));
-        const langAttr = lang ? ` data-lang="${escapeHtml(lang)}"` : '';
-        fences.push(`<pre${langAttr}><code>${safe}</code></pre>`);
-        return `\u0000FENCE${fences.length - 1}\u0000`;
-    });
-
-    const lines = src.split('\n');
-    const out: string[] = [];
-    let paragraph: string[] = [];
-    const flushParagraph = () => {
-        if (paragraph.length === 0) {
-            return;
-        }
-        const joined = paragraph.join(' ').trim();
-        if (joined) {
-            out.push(`<p>${inlineMd(joined)}</p>`);
-        }
-        paragraph = [];
+function renderMath(md: string): { src: string; restore: (html: string) => string } {
+    const slots: string[] = [];
+    const stash = (rendered: string) => {
+        slots.push(rendered);
+        return ` MATH${slots.length - 1} `;
     };
-
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-            flushParagraph();
-            continue;
+    let src = md.replace(/\r\n/g, '\n');
+    const codeBlocks: string[] = [];
+    src = src.replace(/```[\s\S]*?```|`[^`\n]+`/g, (m: string) => {
+        codeBlocks.push(m);
+        return ` CODE${codeBlocks.length - 1} `;
+    });
+    rlog('[math] code-blocks protected:', codeBlocks.length);
+    let displayCount = 0;
+    src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => {
+        displayCount++;
+        rlog('[math] $$ expr:', JSON.stringify(String(expr).slice(0, 120)));
+        try {
+            return stash(katex.renderToString(expr.trim(), { displayMode: true, throwOnError: false, output: 'html' }));
+        } catch (e) {
+            rlog('[math] $$ render error:', String(e));
+            return `$$${expr}$$`;
         }
-        const headerMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
-        if (headerMatch) {
-            flushParagraph();
-            const level = headerMatch[1].length;
-            out.push(`<h${level}>${inlineMd(headerMatch[2])}</h${level}>`);
-            continue;
+    });
+    let inlineCount = 0;
+    src = src.replace(/(?<![\\$])\$([^\n$]+?)\$(?!\$)/g, (_, expr) => {
+        inlineCount++;
+        rlog('[math] $ expr:', JSON.stringify(String(expr).slice(0, 120)));
+        try {
+            return stash(katex.renderToString(expr, { displayMode: false, throwOnError: false, output: 'html' }));
+        } catch (e) {
+            rlog('[math] $ render error:', String(e));
+            return `$${expr}$`;
         }
-        const fenceToken = trimmed.match(/^\u0000FENCE(\d+)\u0000$/);
-        if (fenceToken) {
-            flushParagraph();
-            out.push(fences[Number(fenceToken[1])]);
-            continue;
+    });
+    rlog('[math] display=', displayCount, 'inline=', inlineCount, 'slots=', slots.length);
+    src = src.replace(/ CODE(\d+) /g, (_, i) => codeBlocks[Number(i)]);
+    return {
+        src,
+        restore: (html) => {
+            let restored = 0;
+            const out = html.replace(/ MATH(\d+) /g, (_, i) => { restored++; return slots[Number(i)]; });
+            rlog('[math] restored slots:', restored, '/', slots.length);
+            return out;
         }
-        paragraph.push(trimmed);
-    }
-    flushParagraph();
-
-    return out.join('\n');
+    };
 }
 
-function inlineMd(s: string): string {
-    let html = escapeHtml(s);
-    html = html.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
-    html = html.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, (_, text, url) => `<a href="${url}">${text}</a>`);
-    html = html.replace(/\*\*([^*]+)\*\*/g, (_, c) => `<strong>${c}</strong>`);
-    html = html.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, (_, pre, c) => `${pre}<em>${c}</em>`);
-    return html;
+function decodeHtmlEntities(s: string): string {
+    return s
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&');
+}
+
+function renderMathInCode(html: string): string {
+    return html.replace(/<code>(\$\$?)([\s\S]+?)\1<\/code>/g, (_, delim, body) => {
+        const expr = decodeHtmlEntities(body);
+        const display = delim === '$$';
+        try {
+            return katex.renderToString(expr, { displayMode: display, throwOnError: false, output: 'html' });
+        } catch (e) {
+            rlog('[math] code-math render error:', String(e));
+            return `<code>${delim}${body}${delim}</code>`;
+        }
+    });
+}
+
+function renderMarkdown(md: string): string {
+    rlog('--- renderMarkdown ---');
+    rlog('[md] length=', md.length);
+    rlog('[md] has $$:', /\$\$[\s\S]+?\$\$/.test(md), 'has $..$:', /(?<![\\$])\$[^\n$]+?\$(?!\$)/.test(md));
+    rlog('[md] head:', JSON.stringify(md.slice(0, 600)));
+    const { src, restore } = renderMath(md);
+    let html = marked.parse(src, { async: false }) as string;
+    rlog('[md] html length=', html.length);
+    rlog('[md] html head:', JSON.stringify(html.slice(0, 600)));
+    html = renderMathInCode(html);
+    const out = restore(html);
+    if (isRenderDebug()) { renderLog?.show(true); }
+    return out;
 }
 
 function getTrainerHtml(prefs: TrainerPrefs, userLangs: string[]): string {
@@ -1667,7 +1717,14 @@ function getTrainerHtml(prefs: TrainerPrefs, userLangs: string[]): string {
 </html>`;
 }
 
-function getKataHtml(kata: Kata, hasSession = false): string {
+function getKataHtml(kata: Kata, hasSession = false, webview?: vscode.Webview): string {
+    const katexCss = webview && extensionUri
+        ? webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'katex', 'dist', 'katex.min.css'))
+        : undefined;
+    const hljsCss = webview && extensionUri
+        ? webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'highlight.js', 'styles', 'github-dark.css'))
+        : undefined;
+    const cssLinks = [katexCss, hljsCss].filter(Boolean).map(u => `<link rel="stylesheet" href="${u}">`).join('\n');
     const rankColor = kata.rank.color ? rankColorCss(kata.rank.color) : '#888';
     const tags = kata.tags.map(t => `<span class="chip">${escapeHtml(t)}</span>`).join('') || '<em>—</em>';
     const langs = kata.languages.map(l => `<span class="chip">${escapeHtml(l)}</span>`).join('') || '<em>—</em>';
@@ -1678,8 +1735,16 @@ function getKataHtml(kata: Kata, hasSession = false): string {
     return `<!DOCTYPE html>
 <html>
 <head>
+${cssLinks}
 <style>
     body { font-family: var(--vscode-font-family); padding: 20px 32px; color: var(--vscode-foreground); max-width: 900px; line-height: 1.5; }
+    .description table { border-collapse: collapse; margin: 8px 0; }
+    .description th, .description td { border: 1px solid var(--vscode-widget-border); padding: 4px 10px; }
+    .description blockquote { margin: 8px 0; padding: 0 12px; border-left: 3px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); }
+    .description ul, .description ol { padding-left: 22px; }
+    .description img { max-width: 100%; }
+    .katex-display { overflow-x: auto; overflow-y: hidden; }
+    .hljs { background: var(--vscode-textCodeBlock-background) !important; }
     h1 { margin: 0 0 6px; }
     .meta { color: var(--vscode-descriptionForeground); margin-bottom: 16px; }
     .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }

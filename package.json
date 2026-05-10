@@ -14,6 +14,16 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Codewars",
+      "properties": {
+        "codewars.debugRender": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log kata description rendering details to the 'Codewars Render' output channel."
+        }
+      }
+    },
     "commands": [
       {
         "command": "codewars.openWelcome",
@@ -91,13 +101,19 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.116.0",
+    "@types/katex": "^0.16.8",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.56.1",
+    "@types/vscode": "^1.116.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.3",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.56.1"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.45",
+    "marked": "^12.0.2"
   }
 }
