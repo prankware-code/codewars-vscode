@@ -63,6 +63,17 @@ interface TrainSession {
     fixtureUri?: vscode.Uri;
 }
 const trainSessions = new Map<string, TrainSession>();
+const kataFileToId = new Map<string, string>();
+function rememberKataUri(uri: vscode.Uri | undefined, kataId: string) {
+    if (uri) { kataFileToId.set(uri.fsPath, kataId); }
+}
+function activeKataId(): string | undefined {
+    const path = vscode.window.activeTextEditor?.document.uri.fsPath;
+    return path ? kataFileToId.get(path) : undefined;
+}
+function updateKataContext() {
+    void vscode.commands.executeCommand('setContext', 'codewars.kataFileActive', !!activeKataId());
+}
 let codewarsOutput: vscode.OutputChannel | undefined;
 function getOutputChannel(): vscode.OutputChannel {
     if (!codewarsOutput) {
@@ -1205,9 +1216,28 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         trainSessions.set(kata.id, session);
+        rememberKataUri(session.codeUri, kata.id);
+        rememberKataUri(session.fixtureUri, kata.id);
+        updateKataContext();
         if (panel) {
             panel.webview.html = getKataHtml(kata, true, panel.webview);
         }
+    });
+
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(updateKataContext)
+    );
+    updateKataContext();
+
+    const runActiveCmd = vscode.commands.registerCommand('codewars.runActiveTest', async () => {
+        const id = activeKataId();
+        if (!id) { vscode.window.showWarningMessage('Open a Codewars solution file first.'); return; }
+        await vscode.commands.executeCommand('codewars.testKata', id);
+    });
+    const attemptActiveCmd = vscode.commands.registerCommand('codewars.attemptActive', async () => {
+        const id = activeKataId();
+        if (!id) { vscode.window.showWarningMessage('Open a Codewars solution file first.'); return; }
+        await vscode.commands.executeCommand('codewars.attemptKata', id);
     });
 
     const testKataCmd = vscode.commands.registerCommand('codewars.testKata', async (kataId: string) => {
@@ -1417,7 +1447,8 @@ export function activate(context: vscode.ExtensionContext) {
         openWelcomeCmd, loginCmd, logoutCmd, refreshCmd, openProfileCmd,
         openTrainerCmd, setTrainerLanguageCmd, startTrainingCmd,
         openKataByUrlCmd, openKataByIdCmd, trainKataCmd,
-        testKataCmd, attemptKataCmd
+        testKataCmd, attemptKataCmd,
+        runActiveCmd, attemptActiveCmd
     );
 }
 

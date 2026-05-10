@@ -73,8 +73,32 @@
       {
         "command": "codewars.attemptKata",
         "title": "Codewars: Attempt Current Kata"
+      },
+      {
+        "command": "codewars.runActiveTest",
+        "title": "Codewars: Test",
+        "icon": "$(play)"
+      },
+      {
+        "command": "codewars.attemptActive",
+        "title": "Codewars: Attempt",
+        "icon": "$(cloud-upload)"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "codewars.runActiveTest",
+          "when": "codewars.kataFileActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codewars.attemptActive",
+          "when": "codewars.kataFileActive",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
