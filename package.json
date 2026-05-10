@@ -21,6 +21,11 @@
           "type": "boolean",
           "default": false,
           "description": "Log kata description rendering details to the 'Codewars Render' output channel."
+        },
+        "codewars.verboseRunner": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show session/HTTP plumbing details and per-test timings in the 'Codewars' output channel."
         }
       }
     },

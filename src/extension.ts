@@ -5,8 +5,18 @@ import katex from 'katex';
 
 let extensionUri: vscode.Uri | undefined;
 let renderLog: vscode.OutputChannel | undefined;
+let starterLogChannel: vscode.OutputChannel | undefined;
+function getStarterLog(): vscode.OutputChannel {
+    if (!starterLogChannel) {
+        starterLogChannel = vscode.window.createOutputChannel('Codewars Starter');
+    }
+    return starterLogChannel;
+}
 function isRenderDebug(): boolean {
     return vscode.workspace.getConfiguration('codewars').get<boolean>('debugRender') === true;
+}
+function isVerboseRunner(): boolean {
+    return vscode.workspace.getConfiguration('codewars').get<boolean>('verboseRunner') === true;
 }
 function rlog(...parts: unknown[]) {
     if (!isRenderDebug()) { return; }
@@ -298,10 +308,23 @@ async function ensureKataFile(
     const dir = vscode.Uri.joinPath(context.globalStorageUri, 'katas', kataSlug, language);
     await vscode.workspace.fs.createDirectory(dir);
     const file = vscode.Uri.joinPath(dir, fileName);
+    let exists = false;
     try {
         await vscode.workspace.fs.stat(file);
-    } catch {
+        exists = true;
+    } catch {}
+    if (!exists) {
         await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(initialContent));
+        return file;
+    }
+    const isRealStarter = !/^\s*\/\/\s*Starter code unavailable for/.test(initialContent);
+    if (isRealStarter) {
+        try {
+            const existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(file));
+            if (/^\s*\/\/\s*Starter code unavailable for/.test(existing)) {
+                await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(initialContent));
+            }
+        } catch {}
     }
     return file;
 }
@@ -334,34 +357,61 @@ async function fetchKataSetup(
     const csrfToken = csrfMatch[1];
     const sessionUrl = `https://www.codewars.com/kata/projects/${projectId}/${encodeURIComponent(language)}/session`;
 
+    const jwtMatch = pageHtml.match(/\\"jwt\\":\\"([^"\\]+)\\"/)
+        ?? pageHtml.match(/"jwt"\s*:\s*"([^"]+)"/)
+        ?? pageHtml.match(/data-jwt(?:-token)?="([^"]+)"/);
+    const jwt = jwtMatch?.[1];
+
+    const headers: Record<string, string> = {
+        'Cookie': `_session_id=${cookie}`,
+        'User-Agent': USER_AGENT,
+        'X-CSRF-Token': csrfToken,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': 'https://www.codewars.com',
+        'Referer': trainUrl
+    };
+    if (jwt) {
+        headers['Authorization'] = jwt;
+    } else {
+        getStarterLog().appendLine(`[fetchKataSetup] JWT not found in train page for ${idOrSlug} (${language})`);
+    }
+
+    const doPost = (url: string) => fetch(url, {
+        method: 'POST',
+        headers,
+        redirect: 'follow' as RequestRedirect
+    });
+
     try {
-        const resp = await fetch(sessionUrl, {
-            method: 'POST',
-            headers: {
-                'Cookie': `_session_id=${cookie}`,
-                'User-Agent': USER_AGENT,
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': csrfToken,
-                'X-Requested-With': 'XMLHttpRequest',
-                'Accept': 'application/json',
-                'Referer': trainUrl
-            },
-            body: '{}',
-            redirect: 'follow'
-        });
+        getStarterLog().appendLine(`[fetchKataSetup] POST ${sessionUrl} jwt=${jwt ? jwt.slice(0, 20) + '...' : 'MISSING'} csrf=${csrfToken.slice(0, 10)}...`);
+        let resp = await doPost(sessionUrl);
+        let body = await resp.text();
+        getStarterLog().appendLine(`[fetchKataSetup] resp ${resp.status} ct=${resp.headers.get('content-type') ?? ''} body[0..200]=${body.slice(0, 200)}`);
+        if (resp.ok && /UnknownFormat/.test(body)) {
+            resp = await doPost(sessionUrl + '.json');
+            body = await resp.text();
+        }
         if (!resp.ok) {
-            const body = await resp.text();
-            return { setup: null, debugHtml: `POST ${sessionUrl} → ${resp.status}\n\n${body}` };
+            return { setup: null, debugHtml: `POST ${resp.url} → ${resp.status}\n\n${body}` };
         }
         const contentType = resp.headers.get('content-type') ?? '';
         if (!contentType.includes('json')) {
-            const text = await resp.text();
-            return { setup: null, debugHtml: text };
+            return { setup: null, debugHtml: body };
         }
-        const data = await resp.json() as Record<string, unknown>;
-        const jwtMatch = pageHtml.match(/\\"jwt\\":\\"([^"\\]+)\\"/);
+        let data: Record<string, unknown>;
+        try {
+            data = JSON.parse(body) as Record<string, unknown>;
+        } catch {
+            return { setup: null, debugHtml: `JSON parse failed:\n${body.slice(0, 4000)}` };
+        }
+        const setupVal = (data.setup as string | undefined) ?? null;
+        const debugDump = setupVal
+            ? undefined
+            : `POST ${sessionUrl} → 200 (no "setup" field)\nkeys: ${Object.keys(data).join(', ')}\n\n${JSON.stringify(data, null, 2).slice(0, 8000)}`;
         return {
-            setup: (data.setup as string | undefined) ?? null,
+            setup: setupVal,
+            debugHtml: debugDump,
             exampleFixture: (data.exampleFixture as string | undefined),
             fullFixture: (data.fixture as string | undefined),
             projectId,
@@ -370,7 +420,7 @@ async function fetchKataSetup(
             languageVersion: (data.languageVersion ?? data.activeVersion) as string | undefined,
             ciphered: (data.ciphered as string[] | undefined) ?? [],
             successMode: data.successMode as string | null | undefined,
-            jwt: jwtMatch?.[1],
+            jwt,
             rawSession: data
         };
     } catch (e) {
@@ -1056,24 +1106,45 @@ export function activate(context: vscode.ExtensionContext) {
             () => fetchKataSetup(context, idOrSlug, language!)
         );
 
-        if (!result.setup && result.debugHtml) {
-            const choice = await vscode.window.showWarningMessage(
-                'Starter code not found. Open raw HTML to inspect what Codewars returned?',
-                'Open HTML', 'Dismiss'
-            );
-            if (choice === 'Open HTML') {
-                const doc = await vscode.workspace.openTextDocument({
-                    content: result.debugHtml,
-                    language: 'html'
-                });
-                await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+        if (!result.setup) {
+            const starterLog = getStarterLog();
+            starterLog.appendLine(`\n─── ${kata.name} (${language}) @ ${new Date().toISOString()} ───`);
+            starterLog.appendLine(`hasCookie=${hasCookie}`);
+            if (result.debugHtml) {
+                starterLog.appendLine('--- response body ---');
+                starterLog.appendLine(result.debugHtml);
+            } else {
+                starterLog.appendLine('(no debug body captured)');
             }
-        } else if (!result.setup) {
-            vscode.window.showWarningMessage(
-                hasCookie
-                    ? 'Starter code not found on the train page — opening an empty file.'
-                    : 'Starter code requires a session cookie. Sign in with _session_id to fetch it.'
-            );
+
+            const debug = result.debugHtml ?? '';
+            const looksAnonymous = /\/users\/sign_in|users#signIn|"signed_in":\s*false/i.test(debug);
+            const looksRejected = /"success"\s*:\s*false|UnknownFormat|"status"\s*:\s*40[0-3]/i.test(debug);
+            const cookieProblem = !hasCookie || looksAnonymous || looksRejected;
+
+            if (cookieProblem) {
+                const msg = hasCookie
+                    ? 'Codewars session cookie looks expired. Update _session_id to fetch starter code.'
+                    : 'Starter code requires a Codewars session. Sign in with _session_id to continue.';
+                const choice = await vscode.window.showWarningMessage(
+                    msg,
+                    { modal: false },
+                    'Update cookie', 'Show log', 'Dismiss'
+                );
+                if (choice === 'Update cookie') {
+                    await vscode.commands.executeCommand('codewars.login');
+                } else if (choice === 'Show log') {
+                    starterLog.show(true);
+                }
+            } else {
+                const choice = await vscode.window.showWarningMessage(
+                    `No starter for "${kata.name}" in ${language} — opening an empty file.`,
+                    'Show log', 'Dismiss'
+                );
+                if (choice === 'Show log') {
+                    starterLog.show(true);
+                }
+            }
         }
 
         let panel = kataPanels.get(kata.id);
@@ -1110,14 +1181,16 @@ export function activate(context: vscode.ExtensionContext) {
             codeUri: doc.uri
         };
 
-        const out = getOutputChannel();
-        out.appendLine(`\n─── Session for ${kata.name} (${language}) ───`);
-        out.appendLine(`projectId: ${session.projectId}`);
-        out.appendLine(`solutionId: ${session.solutionId ?? '(missing)'}`);
-        out.appendLine(`testFramework: ${session.testFramework ?? '(missing)'}`);
-        out.appendLine(`jwt: ${session.jwt ? session.jwt.slice(0, 20) + '...' : '(missing)'}`);
-        if (result.rawSession) {
-            out.appendLine(`Raw session keys: ${Object.keys(result.rawSession as object).join(', ')}`);
+        if (isVerboseRunner()) {
+            const out = getOutputChannel();
+            out.appendLine(`\n─── Session for ${kata.name} (${language}) ───`);
+            out.appendLine(`projectId: ${session.projectId}`);
+            out.appendLine(`solutionId: ${session.solutionId ?? '(missing)'}`);
+            out.appendLine(`testFramework: ${session.testFramework ?? '(missing)'}`);
+            out.appendLine(`jwt: ${session.jwt ? session.jwt.slice(0, 20) + '...' : '(missing)'}`);
+            if (result.rawSession) {
+                out.appendLine(`Raw session keys: ${Object.keys(result.rawSession as object).join(', ')}`);
+            }
         }
 
         if (result.exampleFixture && result.exampleFixture.trim().length > 0) {
@@ -1179,7 +1252,8 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        out.appendLine('→ Refreshing session (new relayId)...');
+        const vlog = (msg: string) => { if (isVerboseRunner()) { out.appendLine(msg); } };
+        vlog('→ Refreshing session (new relayId)...');
         const fresh = await fetchKataSetup(context, kataId, session.language);
         if (!fresh.solutionId || !fresh.jwt) {
             out.appendLine('Failed to refresh session — cannot get relayId/jwt.');
@@ -1205,7 +1279,7 @@ export function activate(context: vscode.ExtensionContext) {
         const csrfMatch = pageHtml.match(/<meta name="csrf-token" content="([^"]+)"/);
         const csrfToken = csrfMatch?.[1];
 
-        out.appendLine('→ POST https://www.codewars.com/api/v1/runner/authorize');
+        vlog('→ POST https://www.codewars.com/api/v1/runner/authorize');
         let runnerJwt: string | null = null;
         try {
             const authResp = await fetch('https://www.codewars.com/api/v1/runner/authorize', {
@@ -1222,7 +1296,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             });
             const authBody = await authResp.text();
-            out.appendLine(`← HTTP ${authResp.status} · ${authResp.headers.get('content-type') ?? '(no content-type)'}`);
+            vlog(`← HTTP ${authResp.status} · ${authResp.headers.get('content-type') ?? '(no content-type)'}`);
             if (!authResp.ok) {
                 out.appendLine(authBody.slice(0, 400));
                 return;
@@ -1261,8 +1335,8 @@ export function activate(context: vscode.ExtensionContext) {
             successMode: session.successMode ?? null
         };
 
-        out.appendLine(`Payload: relayId=${payload.relayId} lang=${payload.language} version=${payload.languageVersion} framework=${payload.testFramework} ciphered=${JSON.stringify(payload.ciphered)} setup.len=${payload.setup.length} successMode=${payload.successMode}`);
-        out.appendLine('→ POST https://runner.codewars.com/run');
+        vlog(`Payload: relayId=${payload.relayId} lang=${payload.language} version=${payload.languageVersion} framework=${payload.testFramework} ciphered=${JSON.stringify(payload.ciphered)} setup.len=${payload.setup.length} successMode=${payload.successMode}`);
+        vlog('→ POST https://runner.codewars.com/run');
         try {
             const resp = await fetch('https://runner.codewars.com/run', {
                 method: 'POST',
@@ -1277,7 +1351,7 @@ export function activate(context: vscode.ExtensionContext) {
                 body: JSON.stringify(payload)
             });
             const raw = await resp.text();
-            out.appendLine(`← HTTP ${resp.status} · ${resp.headers.get('content-type') ?? '(no content-type)'}`);
+            vlog(`← HTTP ${resp.status} · ${resp.headers.get('content-type') ?? '(no content-type)'}`);
             if (!resp.ok) {
                 out.appendLine(raw.slice(0, 400));
                 return;
@@ -1292,7 +1366,7 @@ export function activate(context: vscode.ExtensionContext) {
             formatRunResult(out, data);
 
             if (isAttempt && data.token) {
-                out.appendLine(`\n→ POST /api/v1/code-challenges/projects/${session.projectId}/solutions/${session.solutionId}/notify`);
+                vlog(`\n→ POST /api/v1/code-challenges/projects/${session.projectId}/solutions/${session.solutionId}/notify`);
                 try {
                     const notifyResp = await fetch(
                         `https://www.codewars.com/api/v1/code-challenges/projects/${session.projectId}/solutions/${session.solutionId}/notify`,
@@ -1319,7 +1393,7 @@ export function activate(context: vscode.ExtensionContext) {
                         }
                     );
                     const notifyBody = await notifyResp.text();
-                    out.appendLine(`← HTTP ${notifyResp.status} · ${notifyBody.slice(0, 200)}`);
+                    vlog(`← HTTP ${notifyResp.status} · ${notifyBody.slice(0, 200)}`);
                     const completed = data.result?.completed === true;
                     if (completed) {
                         out.appendLine('\n✓ Kata completed — submission finalized on codewars.com');
@@ -1370,8 +1444,19 @@ function formatRunResult(out: vscode.OutputChannel, data: any): void {
     }
 }
 
+function writeMultiline(out: vscode.OutputChannel, text: string, prefix: string, contIndent: string): void {
+    const lines = String(text ?? '').split('\n');
+    if (lines.length === 0) { return; }
+    out.appendLine(`${prefix}${lines[0]}`);
+    for (let i = 1; i < lines.length; i++) {
+        out.appendLine(`${contIndent}${lines[i]}`);
+    }
+}
+
 function renderOutputTree(out: vscode.OutputChannel, nodes: any[], depth: number): void {
     const indent = '  '.repeat(depth);
+    const cont = indent + '  ';
+    const showTiming = isVerboseRunner();
     for (const node of nodes) {
         switch (node.t) {
             case 'describe':
@@ -1383,19 +1468,19 @@ function renderOutputTree(out: vscode.OutputChannel, nodes: any[], depth: number
                 if (Array.isArray(node.items)) { renderOutputTree(out, node.items, depth + 1); }
                 break;
             case 'passed':
-                out.appendLine(`${indent}✓ ${node.v}`);
+                writeMultiline(out, node.v, `${indent}✓ `, cont);
                 break;
             case 'failed':
-                out.appendLine(`${indent}✗ ${node.v}`);
+                writeMultiline(out, node.v, `${indent}✗ `, cont);
                 break;
             case 'error':
-                out.appendLine(`${indent}! ${node.v}`);
+                writeMultiline(out, node.v, `${indent}! `, cont);
                 break;
             case 'log':
-                out.appendLine(`${indent}  ${node.v}`);
+                writeMultiline(out, node.v, `${indent}  `, cont);
                 break;
             case 'completedin':
-                out.appendLine(`${indent}  (${node.v}ms)`);
+                if (showTiming) { out.appendLine(`${indent}  (${node.v}ms)`); }
                 break;
             default:
                 if (node.v) { out.appendLine(`${indent}${node.t}: ${node.v}`); }
